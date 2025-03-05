@@ -50,14 +50,17 @@ function send_message($params)
 {
   $token = file_get_contents("token.txt");
 
-  return send_curl([
+  $response = json_decode(send_curl([
     CURLOPT_URL => 'https://api.telegram.org/bot' . $token . '/sendMessage',
     CURLOPT_POST => true,
     CURLOPT_POSTFIELDS => $params,
     CURLOPT_FOLLOWLOCATION => true,
     CURLOPT_HEADER => false,
     CURLOPT_RETURNTRANSFER => true
-  ]);
+  ]));
+
+  if (!$response->ok)
+    echo '[' . date('d.m.Y H:i:s') . "] " . $response->error_code . " " . $response->description . PHP_EOL;
 }
 
 set_exception_handler(function ($exception) {
@@ -85,6 +88,7 @@ $connector('wss://zkillboard.com/websocket/')->then(function (WebSocket $conn) {
         'text' => ($our_victim ? "📉 " : "📈 ") . $killmail->zkb->url,
         'chat_id' => "-1002358672534",
         'message_thread_id' => 125,
+        'random_id' => $killmail->killmail_id
       ]);
     }
   });
