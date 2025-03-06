@@ -13,6 +13,17 @@ set_exception_handler(function ($exception) {
   send_log("Error: " . $exception->getMessage());
 });
 
+function send_log(string $message, bool $send_to_telegram = true)
+{
+  $date = date('d.m.Y H:i:s');
+  echo "[$date] $message" . PHP_EOL;
+  if ($send_to_telegram)
+    send_message([
+      'text' => $message,
+      'chat_id' => "1065966259"
+    ]);
+}
+
 function send_curl(array $options)
 {
   $headers = [];
@@ -50,17 +61,6 @@ function send_curl(array $options)
   return $response;
 }
 
-function send_log(string $message, bool $send_to_telegram = true)
-{
-  $date = date('d.m.Y H:i:s');
-  echo "[$date] $message" . PHP_EOL;
-  if ($send_to_telegram)
-    send_message([
-      'text' => $message,
-      'chat_id' => "1065966259"
-    ]);
-}
-
 function send_message($params)
 {
   $token = file_get_contents(__DIR__ . '/token.txt');
@@ -91,7 +91,6 @@ function on_message(string $msg)
   }
 
   if ($our_victim || count($our_attackers) > 0) {
-    sleep(5);
     send_message([
       'text' => ($our_victim ? "📉 " : "📈 ") . $killmail->zkb->url,
       'chat_id' => "-1002358672534",
@@ -109,29 +108,43 @@ $connector = new Connector($loop, $reactConnector);
 
 // Адрес WebSocket-сервера
 $wsServerUrl = 'wss://zkillboard.com/websocket/'; // Замените на адрес вашего сервера
+// Функция для подключения к серверу
+function connectToServer($loop, $wsServerUrl, $connector)
+{
+  $connector($wsServerUrl)
+    ->then(function (WebSocket $conn) use ($loop, $wsServerUrl, $connector) {
+      send_log("Подключен к zKillboard!");
 
-// Подключаемся к серверу
-$connector($wsServerUrl)
-  ->then(function (WebSocket $conn) use ($loop) {
-    send_log("Connected to zKillboard!", false);
+      $conn->on('message', function ($msg) use ($loop) {
+        // Обработка с задержкой
+        $loop->addTimer(5, function () use ($msg) {
+          on_message($msg);
+        });
+      });
 
-    $conn->on('message', function ($msg) {
-      on_message($msg);
+      $conn->on('error', function ($error) {
+        send_log("Ошибка: " . $error->getMessage());
+      });
+
+      $conn->on('close', function ($code = null, $reason = null) use ($loop, $wsServerUrl, $connector) {
+        send_log("Соединение закрыто ({$code} - {$reason})");
+
+        // Переподключение
+        $loop->addTimer(5, function () use ($loop, $wsServerUrl, $connector) {
+          send_log("Пытаюсь переподключиться...");
+          connectToServer($loop, $wsServerUrl, $connector);
+        });
+      });
+
+      $conn->send('{"action": "sub","channel": "killstream"}');
+    }, function (\Exception $e) use ($loop) {
+      send_log("Ошибка подключения: {$e->getMessage()}");
+      $loop->stop();
     });
+}
 
-    $conn->on('error', function ($error) {
-      send_log($error);
-    });
-
-    $conn->on('close', function ($code = null, $reason = null) {
-      send_log("Соединение закрыто ({$code} - {$reason})");
-    });
-
-    $conn->send('{"action": "sub","channel": "killstream"}');
-  }, function (\Exception $e) use ($loop) {
-    echo "Ошибка подключения: {$e->getMessage()}\n";
-    $loop->stop();
-  });
+// Запуск подключения
+connectToServer($loop, $wsServerUrl, $connector);
 
 // Запускаем event loop
 $loop->run();
