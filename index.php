@@ -6,8 +6,12 @@ error_reporting(E_ALL && ~E_NOTICE); //Отчёт об ошибках
 
 use Ratchet\Client\WebSocket;
 use Ratchet\Client\Connector;
-use React\EventLoop\Loop;
-use React\Socket\Connector as SocketConnector;
+use React\EventLoop\Factory;
+use React\Socket\Connector as ReactConnector;
+
+set_exception_handler(function ($exception) {
+  send_log("Error: " . $exception->getMessage());
+});
 
 function send_curl(array $options)
 {
@@ -73,50 +77,61 @@ function send_message($params)
     send_log("Telegram ERROR: " . $response->error_code . " " . $response->description, false);
 }
 
-set_exception_handler(function ($exception) {
-  send_log("Error: " . $exception->getMessage());
-});
+function on_message(string $msg)
+{
+  $killmail = json_decode($msg);
+  $target_corps = ['98777806', '98675590'];
 
-$loop = Loop::get();
-$connector = new Connector($loop, new SocketConnector($loop));
-$connector('wss://zkillboard.com/websocket/')->then(function (WebSocket $conn) {
-  send_log("Connected to zKillboard!", false);
+  try {
+    $our_attackers = array_filter($killmail->attackers, fn($el) => in_array($el->corporation_id, $target_corps));
+    $our_victim = in_array($killmail->victim->corporation_id, $target_corps);
+  } catch (\Throwable $th) {
+    send_log("Kill: " . $msg);
+    return;
+  }
 
-  $conn->on('message', function ($msg) {
-    $killmail = json_decode($msg);
-    $target_corps = ['98777806', '98675590'];
+  if ($our_victim || count($our_attackers) > 0) {
+    sleep(5);
+    send_message([
+      'text' => ($our_victim ? "📉 " : "📈 ") . $killmail->zkb->url,
+      'chat_id' => "-1002358672534",
+      'message_thread_id' => 125
+    ]);
+  }
+}
 
-    try {
-      $our_attackers = array_filter($killmail->attackers, fn($el) => in_array($el->corporation_id, $target_corps));
-      $our_victim = in_array($killmail->victim->corporation_id, $target_corps);
-    } catch (\Throwable $th) {
-      send_log("Kill: " . $msg);
-      return;
-    }
+// Создаем event loop
+$loop = Factory::create();
 
-    if ($our_victim || count($our_attackers) > 0) {
-      sleep(5);
-      send_message([
-        'text' => ($our_victim ? "📉 " : "📈 ") . $killmail->zkb->url,
-        'chat_id' => "-1002358672534",
-        'message_thread_id' => 125
-      ]);
-    }
+// Создаем connector для WebSocket
+$reactConnector = new ReactConnector($loop);
+$connector = new Connector($loop, $reactConnector);
+
+// Адрес WebSocket-сервера
+$wsServerUrl = 'wss://zkillboard.com/websocket/'; // Замените на адрес вашего сервера
+
+// Подключаемся к серверу
+$connector($wsServerUrl)
+  ->then(function (WebSocket $conn) use ($loop) {
+    send_log("Connected to zKillboard!", false);
+
+    $conn->on('message', function ($msg) {
+      on_message($msg);
+    });
+
+    $conn->on('error', function ($error) {
+      send_log($error);
+    });
+
+    $conn->on('close', function ($code = null, $reason = null) {
+      send_log("Соединение закрыто ({$code} - {$reason})");
+    });
+
+    $conn->send('{"action": "sub","channel": "killstream"}');
+  }, function (\Exception $e) use ($loop) {
+    echo "Ошибка подключения: {$e->getMessage()}\n";
+    $loop->stop();
   });
 
-
-  $conn->on('close', function () {
-    send_log('Underlying connection closed');
-  });
-
-  $conn->on('error', function ($error) {
-    send_log($error);
-  });
-
-  $conn->send('{"action": "sub","channel": "killstream"}');
-}, function (Exception $e) use ($loop) {
-  send_log("Could not connect: {$e->getMessage()}");
-  $loop->stop();
-});
-
+// Запускаем event loop
 $loop->run();
