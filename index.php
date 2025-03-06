@@ -46,12 +46,22 @@ function send_curl(array $options)
   return $response;
 }
 
+function send_log(string $message, bool $send_to_telegram = true)
+{
+  $date = date('d.m.Y H:i:s');
+  echo "[$date] $message" . PHP_EOL;
+  if ($send_to_telegram)
+    send_message([
+      'text' => $message,
+      'chat_id' => "1065966259"
+    ]);
+}
+
 function send_message($params)
 {
-  $token = file_get_contents("token.txt");
-
+  $token = file_get_contents(__DIR__ . '/token.txt');
   $response = json_decode(send_curl([
-    CURLOPT_URL => 'https://api.telegram.org/bot' . $token . '/sendMessage',
+    CURLOPT_URL => "https://api.telegram.org/bot$token/sendMessage",
     CURLOPT_POST => true,
     CURLOPT_POSTFIELDS => $params,
     CURLOPT_FOLLOWLOCATION => true,
@@ -60,42 +70,52 @@ function send_message($params)
   ]));
 
   if (!$response->ok)
-    echo '[' . date('d.m.Y H:i:s') . "] " . $response->error_code . " " . $response->description . PHP_EOL;
+    send_log("Telegram ERROR: " . $response->error_code . " " . $response->description, false);
 }
 
 set_exception_handler(function ($exception) {
-  send_message([
-    'text' => $exception->getMessage(),
-    'chat_id' => "1065966259"
-  ]);
+  send_log("Error: " . $exception->getMessage());
 });
 
 $loop = Loop::get();
 $connector = new Connector($loop, new SocketConnector($loop));
 $connector('wss://zkillboard.com/websocket/')->then(function (WebSocket $conn) {
-  echo '[' . date('d.m.Y H:i:s') . "] Connected to zKillboard!\n";
+  send_log("Connected to zKillboard!", false);
 
   $conn->on('message', function ($msg) {
     $killmail = json_decode($msg);
     $target_corps = ['98777806', '98675590'];
 
-    $our_attackers = array_filter($killmail->attackers, fn($el) => in_array($el->corporation_id, $target_corps));
-    $our_victim = in_array($killmail->victim->corporation_id, $target_corps);
+    try {
+      $our_attackers = array_filter($killmail->attackers, fn($el) => in_array($el->corporation_id, $target_corps));
+      $our_victim = in_array($killmail->victim->corporation_id, $target_corps);
+    } catch (\Throwable $th) {
+      send_log("Kill: " . $msg);
+      return;
+    }
 
     if ($our_victim || count($our_attackers) > 0) {
-      sleep(60);
+      sleep(5);
       send_message([
         'text' => ($our_victim ? "📉 " : "📈 ") . $killmail->zkb->url,
         'chat_id' => "-1002358672534",
-        'message_thread_id' => 125,
-        'random_id' => $killmail->killmail_id
+        'message_thread_id' => 125
       ]);
     }
   });
 
+
+  $conn->on('close', function () {
+    send_log('Underlying connection closed');
+  });
+
+  $conn->on('error', function ($error) {
+    send_log($error);
+  });
+
   $conn->send('{"action": "sub","channel": "killstream"}');
 }, function (Exception $e) use ($loop) {
-  echo "Could not connect: {$e->getMessage()}\n";
+  send_log("Could not connect: {$e->getMessage()}");
   $loop->stop();
 });
 
